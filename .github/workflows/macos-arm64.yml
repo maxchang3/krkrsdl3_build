@@ -1,0 +1,94 @@
+name: macOS arm64 build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 350
+
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
+
+    steps:
+      - name: Checkout (with cpp submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          clang --version
+          sw_vers
+
+      - name: Install ninja
+        run: command -v ninja || brew install ninja
+
+      - name: Bootstrap vcpkg
+        run: |
+          set -euo pipefail
+          VCPKG_DIR="${GITHUB_WORKSPACE}/../vcpkg"
+          if [ ! -x "${VCPKG_DIR}/vcpkg" ]; then
+            git clone https://github.com/microsoft/vcpkg.git "${VCPKG_DIR}"
+            "${VCPKG_DIR}/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          echo "VCPKG_ROOT=${VCPKG_DIR}" >> "${GITHUB_ENV}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/ports/**') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      - name: Configure and build (Release)
+        run: bash script/build-macos.sh Release
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          test -x out/macos/Release/krkrsdl3
+          mkdir -p dist/krkrsdl3-macos-arm64
+          cp out/macos/Release/krkrsdl3 dist/krkrsdl3-macos-arm64/
+          cp -R Res dist/krkrsdl3-macos-arm64/Res
+          cat > dist/krkrsdl3-macos-arm64/README.txt <<'EOF'
+          krkrsdl3 - macOS arm64 build (unsigned)
+          Built from https://github.com/krkrsdl3/krkrsdl3_build by GitHub Actions.
+
+          Usage:
+            cd <game directory containing startup.tjs / data.xp3>
+            /path/to/krkrsdl3 [options]
+
+          If macOS blocks the binary (quarantine):
+            xattr -dr com.apple.quarantine krkrsdl3
+            codesign --force --sign - krkrsdl3
+          EOF
+          cd dist
+          zip -qry krkrsdl3-macos-arm64.zip krkrsdl3-macos-arm64
+          shasum -a 256 krkrsdl3-macos-arm64.zip > krkrsdl3-macos-arm64.zip.sha256
+          cat krkrsdl3-macos-arm64.zip.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: krkrsdl3-macos-arm64
+          path: |
+            dist/krkrsdl3-macos-arm64.zip
+            dist/krkrsdl3-macos-arm64.zip.sha256
+          retention-days: 90
+          compression-level: 0
